@@ -24,7 +24,9 @@ from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks, R
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.exceptions import RequestValidationError
-from config.settings import get_settings
+
+# ✅ keep config imports OUTSIDE the try so they always work
+from config.settings import get_settings, Settings
 
 # ──────────────────────────────────────────────────────────────────────────────
 # External observability (Prometheus) — lightweight, no starlette-exporter req.
@@ -39,11 +41,9 @@ from prometheus_client import (
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Internal imports (we'll create these next, file-by-file)
-# If you run main.py before creating them, import errors are expected.
+# Internal imports (stub gracefully until files exist)
 # ──────────────────────────────────────────────────────────────────────────────
 try:
-    from config.settings import get_settings, Settings
     from core.auth import verify_tenant  # FastAPI dependency → returns tenant dict
     from core.db import init_db, db_healthcheck, get_async_session  # adapters
     from core.governance import audit_hash, record_decision  # compliance helpers
@@ -56,8 +56,6 @@ try:
     from utils.utils import deterministic_uuid, gen_trace_id, retry_async
 except Exception as _e:
     # Lightweight fallback for local file creation order.
-    # We fail fast on execution, but allow `main.py` to be saved and committed.
-    # Once the modules exist, this block never runs.
     print(f"[BOOT] Module hint: {_e}. This is expected until we add other files.", file=sys.stderr)
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -129,8 +127,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         HEALTH_GAUGE.labels(component="db").set(0)
         logger.exception("db_init_failed", extra={"error": str(e)})
-        # In sandbox we keep running to allow /healthz to reflect failure.
-        # In prod you might raise here to fail fast.
 
     # Start background self-healing supervisor
     app.state.supervisor_task = asyncio.create_task(_supervisor_loop(app, settings, logger))
@@ -161,7 +157,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS (safe default; you can restrict on pilot)
+    # CORS
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ALLOW_ORIGINS,
@@ -170,7 +166,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Attach metrics middleware (micro)
+    # Metrics middleware
     @app.middleware("http")
     async def _metrics_middleware(request: Request, call_next):
         start = time.perf_counter()
@@ -184,7 +180,7 @@ def create_app() -> FastAPI:
             REQ_LATENCY.labels(path=path, method=method).observe(time.perf_counter() - start)
             REQ_COUNT.labels(path=path, method=method, status=str(status)).inc()
 
-    # Exception handlers → consistent JSON + metrics do not break
+    # Exception handlers
     @app.exception_handler(RequestValidationError)
     async def _validation_handler(_: Request, exc: RequestValidationError):
         return JSONResponse(
@@ -194,7 +190,6 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def _unhandled_handler(_: Request, exc: Exception):
-        # We keep this generic to avoid leaking internals
         return JSONResponse(status_code=500, content={"error": "internal_server_error"})
 
     # Routes
@@ -212,14 +207,12 @@ def _wire_routes(app: FastAPI) -> None:
 
     @app.get("/healthz", tags=["ops"])
     async def healthz():
-        # DB health only for now (extend later as needed)
         ok = await db_healthcheck()
         HEALTH_GAUGE.labels(component="db").set(1 if ok else 0)
         return {"status": "ok" if ok else "degraded", "components": {"db": ok}}
 
     @app.get("/readyz", tags=["ops"])
     async def readyz():
-        # In MVP, ready when DB is reachable
         ok = await db_healthcheck()
         return {"ready": bool(ok)}
 
@@ -229,10 +222,6 @@ def _wire_routes(app: FastAPI) -> None:
 
     @app.get("/spec/v1", tags=["ops"])
     async def spec_v1():
-        """
-        Version-pinned OpenAPI snapshot for auditors / SDKs.
-        (In MVP this simply returns the live schema.)
-        """
         return app.openapi()
 
     # ---- Core MVP: DFI ------------------------------------------------------
@@ -243,31 +232,21 @@ def _wire_routes(app: FastAPI) -> None:
         bg: BackgroundTasks,
         tenant=Depends(verify_tenant),
     ):
-        """
-        Input: normalized loan/process event payload (tenant-scoped).
-        Output: DFI score + drivers + narrative + audit hash.
-        """
         settings = get_settings()
         logger = get_logger(service="hydra-core", environment=settings.ENV)
 
-        # Deterministic id for replays + fresh trace id
         run_id = deterministic_uuid(payload)
         trace_id = gen_trace_id()
 
-        # Bind context for logs/traces
         bind_tracing_context(trace_id=trace_id, tenant_id=tenant["id"], run_id=run_id)
-
-        # Optional safe chaos in sandbox
         await chaos_inject(kind="dfi_pre", enabled=settings.CHAOS_ENABLED, rate=0.02)
 
-        # Compute DFI (core/fi.py) — quant-light, explainable
         try:
             result = await compute_dfi(payload, tenant=tenant, trace_id=trace_id)
         except Exception as e:
             logger.exception("dfi_compute_failed", extra={"tenant": tenant["id"], "run_id": run_id, "err": str(e)})
             raise HTTPException(500, "dfi_compute_failed")
 
-        # Narrative (plain-English, negative visualization option)
         summary = narrate_event(
             metric="DFI",
             score=result.get("dfi_score"),
@@ -276,7 +255,6 @@ def _wire_routes(app: FastAPI) -> None:
             money_impact_hint=result.get("money_impact_hint"),
         )
 
-        # Governance: immutable audit hash of the response envelope
         envelope = {
             "metric": "DFI",
             "tenant": tenant["id"],
@@ -289,10 +267,7 @@ def _wire_routes(app: FastAPI) -> None:
         }
         envelope["audit_hash"] = audit_hash(envelope)
 
-        # Async record (non-blocking)
         bg.add_task(record_decision, envelope)
-
-        # Metrics
         DFI_COMPUTED.labels(tenant=tenant["id"]).inc()
 
         return envelope
@@ -305,10 +280,6 @@ def _wire_routes(app: FastAPI) -> None:
         bg: BackgroundTasks,
         tenant=Depends(verify_tenant),
     ):
-        """
-        Input: same normalized payload (includes minimal tempo fields).
-        Output: AFPS score (probability to fund in window) + narrative + audit hash.
-        """
         settings = get_settings()
         logger = get_logger(service="hydra-core", environment=settings.ENV)
 
@@ -351,11 +322,7 @@ def _wire_routes(app: FastAPI) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Background self-healing supervisor (kept tiny on purpose)
-#   - pings DB every N seconds
-#   - if degraded → attempts a soft reconnect
-#   - increments self-heal metrics
-#   - logs state transitions (green → yellow → green)
+# Background self-healing supervisor
 # ──────────────────────────────────────────────────────────────────────────────
 async def _supervisor_loop(app: FastAPI, settings: "Settings", logger):
     probe_int = int(os.getenv("HYDRA_SUPERVISOR_INTERVAL_SEC", "15"))
@@ -370,7 +337,6 @@ async def _supervisor_loop(app: FastAPI, settings: "Settings", logger):
                 if not degraded:
                     logger.warning("db_degraded_detected")
                 degraded = True
-                # Attempt soft heal (re-init connection pool)
                 try:
                     await init_db(settings)
                     SELF_HEALING_ACTIONS.labels(kind="db_reinit").inc()
@@ -380,12 +346,10 @@ async def _supervisor_loop(app: FastAPI, settings: "Settings", logger):
                     logger.error("db_soft_heal_failed", extra={"err": str(e)})
             else:
                 if degraded:
-                    # Recovered
                     logger.info("db_recovered")
                     degraded = False
 
         except asyncio.CancelledError:
-            # Shutdown path
             break
         except Exception as e:
             logger.exception("supervisor_loop_error", extra={"err": str(e)})
@@ -408,15 +372,12 @@ class contextlib_suppress:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Uvicorn entrypoint (optional for local run)
-# In EPC you’ll deploy under the platform’s runtime, e.g., gunicorn/uvicorn worker
+# Uvicorn entrypoint
 # ──────────────────────────────────────────────────────────────────────────────
 app = create_app()
 
 if __name__ == "__main__":
-    # Local dev runner: python main.py
     import uvicorn
-
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
     uvicorn.run("main:app", host=host, port=port, reload=True)
