@@ -24,6 +24,7 @@ from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks, R
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.exceptions import RequestValidationError
+from config.settings import get_settings
 
 # ──────────────────────────────────────────────────────────────────────────────
 # External observability (Prometheus) — lightweight, no starlette-exporter req.
@@ -419,5 +420,3 @@ if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
     uvicorn.run("main:app", host=host, port=port, reload=True)
-
-from config.settings import get_settings
