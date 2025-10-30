@@ -1,0 +1,58 @@
+# ─────────────────────────────
+# Core API runtime
+# ─────────────────────────────
+fastapi==0.115.2
+uvicorn[standard]==0.30.6      # includes uvloop + httptools for perf
+orjson==3.10.7                 # fast JSON (optional but nice)
+
+# ─────────────────────────────
+# Config & validation
+# ─────────────────────────────
+pydantic==1.10.15              # pin v1 to match SQLModel (if/when used)
+pydantic-settings==2.6.1
+python-dotenv==1.0.1
+
+# ─────────────────────────────
+# Observability / Telemetry
+# ─────────────────────────────
+prometheus-client==0.21.0
+opentelemetry-sdk==1.27.0
+opentelemetry-exporter-otlp==1.27.0
+opentelemetry-instrumentation-fastapi==0.48b0
+
+# ─────────────────────────────
+# Security / Auth
+# ─────────────────────────────
+PyJWT==2.9.0
+blake3==0.4.1                  # fast audit hashes (future-proofing)
+
+# ─────────────────────────────
+# Resilience / Utilities
+# ─────────────────────────────
+tenacity==9.0.0                # self-healing retries
+httpx==0.27.2                  # async HTTP client (internal calls if needed)
+
+# ─────────────────────────────
+# Quant-light math (tiny footprint)
+# ─────────────────────────────
+numpy==1.26.4                  # stats, variance, percentiles for DFI/AFPS
+
+# ─────────────────────────────
+# Testing
+# ─────────────────────────────
+pytest==8.3.3
+pytest-asyncio==0.23.8
+
+# ─────────────────────────────
+# Optional (commented out): DB layer
+# ─ Enable these when you wire a DB beyond SQLite.
+# ─────────────────────────────
+# sqlmodel==0.0.22             # requires pydantic v1 (already pinned)
+# sqlalchemy==2.0.36
+# asyncpg==0.29.0              # Postgres async driver
+# alembic==1.13.2              # migrations
+
+# ─────────────────────────────
+# Optional (commented out): Rate limiting
+# ─────────────────────────────
+# slowapi==0.1.9
